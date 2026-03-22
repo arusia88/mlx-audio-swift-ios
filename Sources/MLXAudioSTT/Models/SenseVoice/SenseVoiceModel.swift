@@ -2,7 +2,6 @@ import Foundation
 import HuggingFace
 import MLX
 import MLXAudioCore
-import MLXFast
 import MLXNN
 
 final class SenseVoiceSinusoidalPositionEncoder {

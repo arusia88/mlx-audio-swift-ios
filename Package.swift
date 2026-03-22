@@ -112,7 +112,6 @@ let package = Package(
             name: "MLXAudioSTT",
             dependencies: [
                 "MLXAudioCore",
-                "MLXAudioCodecs",
                 .product(name: "MLX", package: "mlx-swift"),
                 .product(name: "MLXNN", package: "mlx-swift"),
                 .product(name: "MLXLMCommon", package: "mlx-swift-lm"),
