@@ -1,7 +1,21 @@
 import Foundation
 import HuggingFace
 
-public typealias ModelDownloadProgressHandler = @MainActor @Sendable (Progress) -> Void
+/// Progress info for model downloads, including byte-level tracking.
+public struct ModelDownloadProgress: Sendable {
+    /// Bytes downloaded so far
+    public let bytesDownloaded: Int64
+    /// Estimated total bytes (0 if unknown)
+    public let bytesTotal: Int64
+    /// Fraction completed (0.0 to 1.0)
+    public let fractionCompleted: Double
+    /// Number of files completed
+    public let filesCompleted: Int64
+    /// Total number of files
+    public let filesTotal: Int64
+}
+
+public typealias ModelDownloadProgressHandler = @MainActor @Sendable (ModelDownloadProgress) -> Void
 
 public enum ModelUtils {
     public static func resolveModelType(
@@ -63,7 +77,6 @@ public enum ModelUtils {
             ? String(requiredExtension.dropFirst())
             : requiredExtension
 
-        // Store downloaded model snapshots under the configured Hugging Face cache root.
         let modelSubdir = repoID.description.replacingOccurrences(of: "/", with: "_")
         let modelDir = cache.cacheDirectory
             .appendingPathComponent("mlx-audio")
@@ -79,7 +92,6 @@ public enum ModelUtils {
             } ?? false
 
             if hasRequiredFile {
-                // Validate that config.json is valid JSON
                 let configPath = modelDir.appendingPathComponent("config.json")
                 if FileManager.default.fileExists(atPath: configPath.path) {
                     if let configData = try? Data(contentsOf: configPath),
@@ -91,14 +103,12 @@ public enum ModelUtils {
                         Self.clearCaches(modelDir: modelDir, repoID: repoID, hubCache: cache)
                     }
                 }
-            }
-            else {
+            } else {
                 print("Cached model appears incomplete, clearing cache...")
                 Self.clearCaches(modelDir: modelDir, repoID: repoID, hubCache: cache)
             }
         }
 
-        // Create directory if needed
         try FileManager.default.createDirectory(at: modelDir, withIntermediateDirectories: true)
 
         var allowedExtensions: Set<String> = [
@@ -111,18 +121,68 @@ public enum ModelUtils {
         allowedExtensions.formUnion(additionalMatchingPatterns)
 
         print("Downloading model \(repoID)...")
+
+        // Start a byte-level progress polling task alongside the download
+        let pollingTask: Task<Void, Never>?
+        if let progressHandler {
+            let dirURL = modelDir
+            // Also monitor the HubClient cache directory for in-progress downloads
+            let hubCacheDir = cache.cacheDirectory
+            pollingTask = Task { @MainActor in
+                while !Task.isCancelled {
+                    try? await Task.sleep(nanoseconds: 500_000_000) // 0.5 seconds
+                    guard !Task.isCancelled else { break }
+
+                    // Sum up bytes in model dir + hub cache dir (in-progress files)
+                    let modelDirBytes = Self.directorySize(dirURL)
+                    let hubBytes = Self.directorySize(hubCacheDir)
+                    let totalBytes = modelDirBytes + hubBytes
+
+                    let progress = ModelDownloadProgress(
+                        bytesDownloaded: totalBytes,
+                        bytesTotal: 0, // unknown until download completes
+                        fractionCompleted: 0,
+                        filesCompleted: 0,
+                        filesTotal: 0
+                    )
+                    progressHandler(progress)
+                }
+            }
+        } else {
+            pollingTask = nil
+        }
+
+        var lastFilesCompleted: Int64 = 0
+        var lastFilesTotal: Int64 = 0
+
         _ = try await client.downloadSnapshot(
             of: repoID,
             kind: .model,
             to: modelDir,
             revision: "main",
             matching: Array(allowedExtensions),
-            progressHandler: { progress in
-                progressHandler?(progress)
+            progressHandler: { hubProgress in
+                lastFilesCompleted = hubProgress.completedUnitCount
+                lastFilesTotal = hubProgress.totalUnitCount
             }
         )
 
-        // Post-download validation: ensure required files are non-zero
+        pollingTask?.cancel()
+
+        // Report completion
+        if let progressHandler {
+            let finalSize = Self.directorySize(modelDir)
+            let progress = ModelDownloadProgress(
+                bytesDownloaded: finalSize,
+                bytesTotal: finalSize,
+                fractionCompleted: 1.0,
+                filesCompleted: lastFilesCompleted,
+                filesTotal: lastFilesTotal
+            )
+            await progressHandler(progress)
+        }
+
+        // Post-download validation
         let downloadedFiles = try? FileManager.default.contentsOfDirectory(
             at: modelDir, includingPropertiesForKeys: [.fileSizeKey]
         )
@@ -139,6 +199,23 @@ public enum ModelUtils {
 
         print("Model downloaded to: \(modelDir.path)")
         return modelDir
+    }
+
+    /// Calculate total size of all files in a directory (non-recursive for performance).
+    private static func directorySize(_ url: URL) -> Int64 {
+        guard let enumerator = FileManager.default.enumerator(
+            at: url,
+            includingPropertiesForKeys: [.fileSizeKey],
+            options: [.skipsHiddenFiles]
+        ) else { return 0 }
+
+        var total: Int64 = 0
+        for case let fileURL as URL in enumerator {
+            if let size = (try? fileURL.resourceValues(forKeys: [.fileSizeKey]))?.fileSize {
+                total += Int64(size)
+            }
+        }
+        return total
     }
 
     private static func clearCaches(modelDir: URL, repoID: Repo.ID, hubCache: HubCache) {
