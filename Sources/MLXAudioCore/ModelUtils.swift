@@ -92,7 +92,10 @@ public enum ModelUtils {
                     }
                 }
             }
-            // Don't clear incomplete downloads — HubClient will resume/skip already-downloaded files
+            else {
+                print("Cached model appears incomplete, clearing cache...")
+                Self.clearCaches(modelDir: modelDir, repoID: repoID, hubCache: cache)
+            }
         }
 
         // Create directory if needed
