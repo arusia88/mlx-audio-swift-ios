@@ -397,13 +397,18 @@ public extension VoxtralRealtimeModel {
         let files = try FileManager.default.contentsOfDirectory(at: modelDir, includingPropertiesForKeys: nil)
         let safetensors = files.filter { $0.pathExtension == "safetensors" }
 
-        var weights: [String: MLXArray] = [:]
-        for file in safetensors {
-            let shard = try MLX.loadArrays(url: file)
-            weights.merge(shard) { _, new in new }
-        }
+        // Memory-efficient loading: sanitize in-place, release originals immediately
+        var sanitized: [String: MLXArray] = [:]
+        sanitized.reserveCapacity(1024)
 
-        let sanitized = sanitize(weights: weights)
+        for file in safetensors {
+            // loadArrays uses mmap internally — arrays are lazy until evaluated
+            let shard = try MLX.loadArrays(url: file)
+            // Sanitize each shard immediately and discard original keys
+            let sanitizedShard = sanitize(weights: shard)
+            sanitized.merge(sanitizedShard) { _, new in new }
+            // shard is released here, freeing the dictionary (mmap refs stay via sanitized values)
+        }
 
         if let perLayerQuantization = quantConfig.perLayerQuantization {
             quantize(model: model) { path, _ in
@@ -418,6 +423,9 @@ public extension VoxtralRealtimeModel {
         }
 
         try model.update(parameters: ModuleParameters.unflattened(sanitized), verify: .all)
+        // Release the sanitized dictionary — model now owns the parameters
+        sanitized.removeAll()
+
         model.ensureAdaScales(transcriptionDelayMs: config.transcriptionDelayMs)
         eval(model)
 
