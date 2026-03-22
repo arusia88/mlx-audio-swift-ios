@@ -152,19 +152,12 @@ public enum ModelUtils {
             pollingTask = nil
         }
 
-        var lastFilesCompleted: Int64 = 0
-        var lastFilesTotal: Int64 = 0
-
         _ = try await client.downloadSnapshot(
             of: repoID,
             kind: .model,
             to: modelDir,
             revision: "main",
-            matching: Array(allowedExtensions),
-            progressHandler: { hubProgress in
-                lastFilesCompleted = hubProgress.completedUnitCount
-                lastFilesTotal = hubProgress.totalUnitCount
-            }
+            matching: Array(allowedExtensions)
         )
 
         pollingTask?.cancel()
@@ -176,8 +169,8 @@ public enum ModelUtils {
                 bytesDownloaded: finalSize,
                 bytesTotal: finalSize,
                 fractionCompleted: 1.0,
-                filesCompleted: lastFilesCompleted,
-                filesTotal: lastFilesTotal
+                filesCompleted: 0,
+                filesTotal: 0
             )
             await progressHandler(progress)
         }
