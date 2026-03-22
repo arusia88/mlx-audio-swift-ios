@@ -1,6 +1,8 @@
 import Foundation
 import HuggingFace
 
+public typealias ModelDownloadProgressHandler = @MainActor @Sendable (Progress) -> Void
+
 public enum ModelUtils {
     public static func resolveModelType(
         repoID: Repo.ID,
@@ -22,17 +24,13 @@ public enum ModelUtils {
     }
 
     /// Resolves a model from cache or downloads it if not cached.
-    /// - Parameters:
-    ///   - string: The repository name
-    ///   - requiredExtension: File extension that must exist for cache to be considered complete (e.g., "safetensors")
-    ///   - hfToken: The huggingface token for access to gated repositories, if needed.
-    /// - Returns: The model directory URL
     public static func resolveOrDownloadModel(
         repoID: Repo.ID,
         requiredExtension: String,
         additionalMatchingPatterns: [String] = [],
         hfToken: String? = nil,
-        cache: HubCache = .default
+        cache: HubCache = .default,
+        progressHandler: ModelDownloadProgressHandler? = nil
     ) async throws -> URL {
         let client: HubClient
         if let token = hfToken, !token.isEmpty {
@@ -47,23 +45,19 @@ public enum ModelUtils {
             cache: resolvedCache,
             repoID: repoID,
             requiredExtension: requiredExtension,
-            additionalMatchingPatterns: additionalMatchingPatterns
+            additionalMatchingPatterns: additionalMatchingPatterns,
+            progressHandler: progressHandler
         )
     }
 
     /// Resolves a model from cache or downloads it if not cached.
-    /// - Parameters:
-    ///   - client: The HuggingFace Hub client
-    ///   - cache: The HuggingFace cache
-    ///   - repoID: The repository ID
-    ///   - requiredExtension: File extension that must exist for cache to be considered complete (e.g., "safetensors")
-    /// - Returns: The model directory URL
     public static func resolveOrDownloadModel(
         client: HubClient,
         cache: HubCache = .default,
         repoID: Repo.ID,
         requiredExtension: String,
-        additionalMatchingPatterns: [String] = []
+        additionalMatchingPatterns: [String] = [],
+        progressHandler: ModelDownloadProgressHandler? = nil
     ) async throws -> URL {
         let normalizedRequiredExtension = requiredExtension.hasPrefix(".")
             ? String(requiredExtension.dropFirst())
@@ -97,10 +91,8 @@ public enum ModelUtils {
                         Self.clearCaches(modelDir: modelDir, repoID: repoID, hubCache: cache)
                     }
                 }
-            } else {
-                print("Cached model appears incomplete, clearing cache...")
-                Self.clearCaches(modelDir: modelDir, repoID: repoID, hubCache: cache)
             }
+            // Don't clear incomplete downloads — HubClient will resume/skip already-downloaded files
         }
 
         // Create directory if needed
@@ -123,7 +115,7 @@ public enum ModelUtils {
             revision: "main",
             matching: Array(allowedExtensions),
             progressHandler: { progress in
-                print("\(progress.completedUnitCount)/\(progress.totalUnitCount) files")
+                progressHandler?(progress)
             }
         )
 
